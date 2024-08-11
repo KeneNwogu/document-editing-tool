@@ -30,40 +30,20 @@
     </div>
     <div class="content">
       <div class="document-info">
-        <h3>{{ document.Title }}</h3>
+        <input type="text" v-model="document.Title" :disabled="!loggedIn" @input="updateDocument"/>
         <!-- <p>Created by: User Name (date)</p> -->
       </div>
-      <div id="editor">
+      <div id="editor" style="position: relative">
         <p v-if="!loggedIn">Log in to make edits to this document</p>
-        <div
+        <textarea
           class="textarea"
           ref="textareaRef"
           :disabled="!loggedIn"
           @click="getCoordinates"
           @input="updateDocument"
-          contenteditable="true"
+          v-model="document.Content"
         >
-          {{ document.Content }}
-        </div>
-
-        <div
-          class="cursor"
-          v-for="cursor in cursorTrackers"
-          :key="cursor.user"
-          :clientX="cursor.x"
-          :clientY="cursor.y"
-          :user="cursor.user"
-          :style="{
-            position: 'absolute',
-            left: cursor.x + 'px',
-            top: cursor.y + 'px',
-            color: cursor.color,
-            display: !loggedIn ? 'none' : 'inline-block',
-          }"
-        >
-          |
-          <span class="cursor-text">{{ cursor.user }}</span>
-        </div>
+        </textarea>
       </div>
     </div>
   </div>
@@ -76,43 +56,21 @@ import io from "socket.io-client";
 export default {
   beforeMount() {
     this.socket = io("http://localhost:1337");
-    this.socket.on("document-updated", () => {
-      this.fetchDocument();
+
+    this.socket.on("document:update", (data) => {
+      this.document = data.data.attributes;
     });
 
     this.socket.on("active-users", (data) => {
-      this.activeUsers = data;
+      this.activeUsers = data.data;
     });
 
-    this.socket.on("document-updated", ({ message, updateData }) => {
+    this.socket.on("document-history", ({ data }) => {
       // only keeps track of the 10 latest actions
       if (this.history.length >= 10) {
         this.history.pop();
       }
-      this.history.unshift(message);
-
-      this.document = updateData;
-    });
-
-    this.socket.on("cursor-moved", ({ user, x, y }) => {
-      let index = this.cursorTrackers.findIndex(
-        (cursor) => cursor.user === user
-      );
-      if (index == -1) {
-        this.cursorTrackers.push({
-          user,
-          x,
-          y,
-          color: this.generateRandomColor(),
-        });
-      } else {
-        this.cursorTrackers[index] = {
-          user,
-          x,
-          y,
-          color: this.cursorTrackers[index].color,
-        };
-      }
+      this.history.unshift(data);
     });
   },
   data() {
@@ -123,58 +81,58 @@ export default {
         Title: "",
         Content: "",
       },
-      // new properties to account for the current user, active users and history.
+      loggedIn: false,
       activeUsers: [],
       history: [],
-      loggedIn: false,
       username: "",
-      cursorTrackers: [],
     };
   },
   methods: {
-    // the login function emits the user-joined event to the websocket
-    login() {
-      this.socket.emit("user-joined", this.username);
-      this.loggedIn = true;
-    },
     fetchDocument() {
       axios
-        .get("/documents/1")
+        .get("/documents")
+        .then(({ data }) => {
+          if (data.data.length > 0) {
+            this.id = data.data[0].id;
+            this.document = data.data[0].attributes;
+          } else {
+            this.createDocument();
+          }
+        })
+        .catch((err) => {
+          let status = err.response.status;
+          if (status === 404) {
+            this.createDocument();
+          }
+        });
+    },
+    createDocument() {
+      axios
+        .post("/documents", {
+          data: {
+            Title: "New Document",
+            Content: "start editing",
+          },
+        })
         .then(({ data }) => {
           this.id = data.data.id;
           this.document = data.data.attributes;
-        })
-        .catch((err) => console.log(err));
+        });
     },
     updateDocument() {
-      let Content = this.$refs.textareaRef.innerText;
-      this.socket.emit("edit-document", { id: this.id, ...this.document, Content });
+      this.socket.emit("update-history", this.username);
+      axios
+        .put(`/documents/${this.id}`, {
+          data: {
+            Title: this.document.Title,
+            Content: this.document.Content,
+          },
+        })
+        .then(() => {});
     },
-    getCoordinates() {
-      if (this.loggedIn) {
-        const selection = window.getSelection();
-        const range = selection.getRangeAt(0);
-        let rect = range.getBoundingClientRect();
-        this.socket.emit("move-cursor", { x: rect.x, y: rect.y });
-      }
-    },
-    generateRandomColor() {
-      // Create a hexadecimal color string with a "#" prefix
-      const color = "#";
-
-      // Generate random numbers for red, green, and blue components (0-255)
-      const red = Math.floor(Math.random() * 256)
-        .toString(16)
-        .padStart(2, "0");
-      const green = Math.floor(Math.random() * 256)
-        .toString(16)
-        .padStart(2, "0");
-      const blue = Math.floor(Math.random() * 256)
-        .toString(16)
-        .padStart(2, "0");
-
-      // Combine the components into the final color string
-      return color + red + green + blue;
+    login() {
+      this.socket.emit("user-joined", this.username);
+      this.loggedIn = true;
     },
   },
   mounted() {
